@@ -8,11 +8,10 @@
 
 #[cfg(target_os = "linux")]
 fn main() -> std::io::Result<()> {
-    use std::io;
     use std::os::unix::io::AsRawFd;
     use std::time::{Duration, Instant};
 
-    use smol::Async;
+    use smol::{io, Async};
     use timerfd::{SetTimeFlags, TimerFd, TimerState};
 
     /// Converts a [`nix::Error`] into [`std::io::Error`].
@@ -31,12 +30,12 @@ fn main() -> std::io::Result<()> {
 
         // When the OS timer fires, a 64-bit integer can be read from it.
         Async::new(timer)?
-            .with(|t| nix::unistd::read(t.as_raw_fd(), &mut [0u8; 8]).map_err(io_err))
+            .read_with(|t| nix::unistd::read(t.as_raw_fd(), &mut [0u8; 8]).map_err(io_err))
             .await?;
         Ok(())
     }
 
-    smol::run(async {
+    smol::block_on(async {
         let start = Instant::now();
         println!("Sleeping...");
 

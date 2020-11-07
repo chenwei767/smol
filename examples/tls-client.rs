@@ -16,31 +16,28 @@ use std::net::TcpStream;
 
 use anyhow::Result;
 use async_native_tls::{Certificate, TlsConnector};
-use futures::io;
-use futures::prelude::*;
-use piper::Mutex;
-use smol::Async;
+use smol::{future, io, Async, Unblock};
 
 fn main() -> Result<()> {
     // Initialize TLS with the local certificate.
     let mut builder = native_tls::TlsConnector::builder();
-    builder.add_root_certificate(Certificate::from_pem(include_bytes!("../certificate.pem"))?);
+    builder.add_root_certificate(Certificate::from_pem(include_bytes!("certificate.pem"))?);
     let tls = TlsConnector::from(builder);
 
-    smol::run(async {
+    smol::block_on(async {
         // Create async stdin and stdout handles.
-        let stdin = smol::reader(std::io::stdin());
-        let mut stdout = smol::writer(std::io::stdout());
+        let stdin = Unblock::new(std::io::stdin());
+        let mut stdout = Unblock::new(std::io::stdout());
 
         // Connect to the server.
-        let stream = Async::<TcpStream>::connect("127.0.0.1:7001").await?;
+        let stream = Async::<TcpStream>::connect(([127, 0, 0, 1], 7001)).await?;
         let stream = tls.connect("127.0.0.1", stream).await?;
         println!("Connected to {}", stream.get_ref().get_ref().peer_addr()?);
         println!("Type a message and hit enter!\n");
 
         // Pipe messages from stdin to the server and pipe messages from the server to stdout.
-        let stream = Mutex::new(stream);
-        future::try_join(
+        let stream = async_dup::Mutex::new(stream);
+        future::try_zip(
             io::copy(stdin, &mut &stream),
             io::copy(&stream, &mut stdout),
         )

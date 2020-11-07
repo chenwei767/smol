@@ -1,7 +1,7 @@
 # smol
 
 [![Build](https://github.com/stjepang/smol/workflows/Build%20and%20test/badge.svg)](
-https://travis-ci.org/stjepang/smol)
+https://github.com/stjepang/smol/actions)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](
 https://github.com/stjepang/smol)
 [![Cargo](https://img.shields.io/crates/v/smol.svg)](
@@ -11,120 +11,93 @@ https://docs.rs/smol)
 [![Chat](https://img.shields.io/discord/701824908866617385.svg?logo=discord)](
 https://discord.gg/x6m5Vvt)
 
-A small and fast async runtime for Rust.
+A small and fast async runtime.
 
-This runtime extends [the standard library][std] with async combinators
-and is only 1500 lines of code long.
+This crate simply re-exports other smaller async crates (see the source).
 
-[std]: https://docs.rs/std
-
-Reading the [docs] or looking at the [examples] is a great way to start learning
-async Rust.
-
-[docs]: https://docs.rs/smol
-[examples]: ./examples
-
-Async I/O is implemented using [epoll] on Linux/Android, [kqueue] on
-macOS/iOS/BSD, and [wepoll] on Windows.
-
-[epoll]: https://en.wikipedia.org/wiki/Epoll
-[kqueue]: https://en.wikipedia.org/wiki/Kqueue
-[wepoll]: https://github.com/piscisaureus/wepoll
-
-## Features
-
-* Async TCP, UDP, Unix domain sockets, and custom file descriptors.
-* Thread-local executor for `!Send` futures.
-* Work-stealing executor that adapts to uneven workloads.
-* Blocking executor for files, processes, and standard I/O.
-* Tasks that support cancelation.
-* Userspace timers.
+To use tokio-based libraries with smol, apply the [`async-compat`] adapter to futures and I/O
+types.
 
 ## Examples
 
-You need to be in the [examples] directory to run them:
+Connect to an HTTP website, make a GET request, and pipe the response to the standard output:
 
-```terminal
-$ cd examples
-$ ls
-$ cargo run --example ctrl-c
+```rust,no_run
+use smol::{io, net, prelude::*, Unblock};
+
+fn main() -> io::Result<()> {
+    smol::block_on(async {
+        let mut stream = net::TcpStream::connect("example.com:80").await?;
+        let req = b"GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
+        stream.write_all(req).await?;
+
+        let mut stdout = Unblock::new(std::io::stdout());
+        io::copy(stream, &mut stdout).await?;
+        Ok(())
+    })
+}
 ```
 
-## Compatibility
+There's a lot more in the [examples] directory.
 
-See [this example](./examples/other-runtimes.rs) for how to use smol with
-[async-std], [tokio], [surf], and [reqwest].
+[`async-compat`]: https://docs.rs/async-compat
+[examples]: https://github.com/stjepang/smol/tree/master/examples
+[get-request]: https://github.com/stjepang/smol/blob/master/examples/get-request.rs
 
-There is an optional feature for seamless integration with crates depending
-on tokio. It creates a global tokio runtime and sets up its context inside smol.
-Enable the feature as follows:
+## Subcrates
 
-```toml
-[dependencies]
-smol = { version = "0.1", features = ["tokio02"] }
-```
+- [async-channel] - Multi-producer multi-consumer channels
+- [async-executor] - Composable async executors
+- [async-fs] - Async filesystem primitives
+- [async-io] - Async adapter for I/O types, also timers
+- [async-lock] - Async locks (barrier, mutex, reader-writer lock, semaphore)
+- [async-net] - Async networking primitives (TCP/UDP/Unix)
+- [async-process] - Async interface for working with processes
+- [async-task] - Task abstraction for building executors
+- [blocking] - A thread pool for blocking I/O
+- [futures-lite] - A lighter fork of [futures]
+- [polling] - Portable interface to epoll, kqueue, event ports, and wepoll
 
-[async-std]: https://docs.rs/async-std
-[tokio]: https://docs.rs/tokio
-[surf]: https://docs.rs/surf
-[reqwest]: https://docs.rs/reqwest
-
-## Documentation
-
-You can read the docs [here][docs], or generate them on your own.
-
-If you'd like to explore the implementation in more depth, the following
-command generates docs for the whole crate, including private modules:
-
-```
-cargo doc --document-private-items --no-deps --open
-```
-
-[docs]: https://docs.rs/smol
-
-## Other crates
-
-My personal crate recommendation list:
-
-* Channels, pipes, and mutexes: [piper]
-* HTTP clients: [surf], [isahc], [reqwest]
-* HTTP servers: [async-h1], [hyper]
-* WebSockets: [async-tungstenite]
-* TLS authentication: [async-native-tls]
-* Signals: [ctrlc], [signal-hook]
-
-[piper]: https://docs.rs/piper
-[surf]: https://docs.rs/surf
-[isahc]: https://docs.rs/isahc
-[reqwest]: https://docs.rs/reqwest
-[async-h1]: https://docs.rs/async-h1
-[hyper]: https://docs.rs/hyper
-[async-tungstenite]: https://docs.rs/async-tungstenite
-[async-native-tls]: https://docs.rs/async-native-tls
-[native-tls]: https://docs.rs/native-tls
-[ctrlc]: https://docs.rs/ctrlc
-[signal-hook]: https://docs.rs/signal-hook
+[async-io]: https://github.com/stjepang/async-io
+[polling]: https://github.com/stjepang/polling
+[nb-connect]: https://github.com/stjepang/nb-connect
+[async-executor]: https://github.com/stjepang/async-executor
+[async-task]: https://github.com/stjepang/async-task
+[blocking]: https://github.com/stjepang/blocking
+[futures-lite]: https://github.com/stjepang/futures-lite
+[smol]: https://github.com/stjepang/smol
+[async-net]: https://github.com/stjepang/async-net
+[async-process]: https://github.com/stjepang/async-process
+[async-fs]: https://github.com/stjepang/async-fs
+[async-channel]: https://github.com/stjepang/async-channel
+[concurrent-queue]: https://github.com/stjepang/concurrent-queue
+[event-listener]: https://github.com/stjepang/event-listener
+[async-lock]: https://github.com/stjepang/async-lock
+[fastrand]: https://github.com/stjepang/fastrand
+[futures]: https://github.com/rust-lang/futures-rs
 
 ## TLS certificate
 
-Some code examples are using TLS for authentication.
+Some code examples are using TLS for authentication. The repository
+contains a self-signed certificate usable for testing, but it should **not**
+be used for real-world scenarios. Browsers and tools like curl will
+show this certificate as insecure.
 
-To access HTTPS servers from your browser, you'll first need to import the
-certificate from this repository (Chrome/Firefox):
-
-1. Open browser settings and go to the certificate *Authorities* list.
-2. Click *Import* and select `certificate.pem`.
-3. Enable *Trust this CA to identify websites* and click *OK*.
-4. Restart the browser (yes, you have to!) and go to [https://127.0.0.1:8001](https://127.0.0.1:8001)
+In browsers, accept the security prompt or use `curl -k` on the
+command line to bypass security warnings.
 
 The certificate file was generated using
 [minica](https://github.com/jsha/minica) and
 [openssl](https://www.openssl.org/):
 
-```
+```text
 minica --domains localhost -ip-addresses 127.0.0.1 -ca-cert certificate.pem
 openssl pkcs12 -export -out identity.pfx -inkey localhost/key.pem -in localhost/cert.pem
 ```
+
+Another useful tool for making certificates is [mkcert].
+
+[mkcert]: https://github.com/FiloSottile/mkcert
 
 ## License
 

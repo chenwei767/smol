@@ -9,27 +9,24 @@
 //! Open in the browser any of these addresses:
 //!
 //! - http://localhost:8000/
-//! - https://localhost:8001/ (you'll need to import the TLS certificate first!)
+//! - https://localhost:8001/ (accept the security prompt in the browser)
 //!
-//! Refer to `README.md` to see how to import or generate the TLS certificate.
+//! Refer to `README.md` to see how to the TLS certificate was generated.
 
-use std::io;
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::thread;
 
 use anyhow::{Error, Result};
 use async_native_tls::{Identity, TlsAcceptor, TlsStream};
-use futures::prelude::*;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
-use smol::{Async, Task};
+use smol::{future, io, prelude::*, Async};
 
 /// Serves a request and returns a response.
 async fn serve(req: Request<Body>, host: String) -> Result<Response<Body>> {
     println!("Serving {}{}", host, req.uri());
-    Ok(Response::new(Body::from("Hello World!")))
+    Ok(Response::new(Body::from("Hello from hyper!")))
 }
 
 /// Listens for incoming connections and serves them.
@@ -55,21 +52,19 @@ async fn listen(listener: Async<TcpListener>, tls: Option<TlsAcceptor>) -> Resul
 
 fn main() -> Result<()> {
     // Initialize TLS with the local certificate, private key, and password.
-    let identity = Identity::from_pkcs12(include_bytes!("../identity.pfx"), "password")?;
+    let identity = Identity::from_pkcs12(include_bytes!("identity.pfx"), "password")?;
     let tls = TlsAcceptor::from(native_tls::TlsAcceptor::new(identity)?);
 
-    // Create an executor thread pool.
-    for _ in 0..num_cpus::get().max(1) {
-        thread::spawn(|| smol::run(future::pending::<()>()));
-    }
-
     // Start HTTP and HTTPS servers.
-    smol::run(Task::spawn(async {
-        let http = listen(Async::<TcpListener>::bind("127.0.0.1:8000")?, None);
-        let https = listen(Async::<TcpListener>::bind("127.0.0.1:8001")?, Some(tls));
-        future::try_join(http, https).await?;
+    smol::block_on(async {
+        let http = listen(Async::<TcpListener>::bind(([127, 0, 0, 1], 8000))?, None);
+        let https = listen(
+            Async::<TcpListener>::bind(([127, 0, 0, 1], 8001))?,
+            Some(tls),
+        );
+        future::try_zip(http, https).await?;
         Ok(())
-    }))
+    })
 }
 
 /// Spawns futures.
@@ -78,7 +73,7 @@ struct SmolExecutor;
 
 impl<F: Future + Send + 'static> hyper::rt::Executor<F> for SmolExecutor {
     fn execute(&self, fut: F) {
-        Task::spawn(async { drop(fut.await) }).detach();
+        smol::spawn(async { drop(fut.await) }).detach();
     }
 }
 
@@ -99,11 +94,12 @@ impl hyper::server::accept::Accept for SmolListener {
     type Error = Error;
 
     fn poll_accept(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context,
     ) -> Poll<Option<Result<Self::Conn, Self::Error>>> {
-        let poll = Pin::new(&mut self.listener.incoming()).poll_next(cx);
-        let stream = futures::ready!(poll).unwrap()?;
+        let incoming = self.listener.incoming();
+        smol::pin!(incoming);
+        let stream = smol::ready!(incoming.poll_next(cx)).unwrap()?;
 
         let stream = match &self.tls {
             None => SmolStream::Plain(stream),
@@ -111,9 +107,10 @@ impl hyper::server::accept::Accept for SmolListener {
                 // In case of HTTPS, start establishing a secure TLS connection.
                 let tls = tls.clone();
                 SmolStream::Handshake(Box::pin(async move {
-                    tls.accept(stream)
-                        .await
-                        .map_err(|err| io::Error::new(io::ErrorKind::Other, Box::new(err)))
+                    tls.accept(stream).await.map_err(|err| {
+                        println!("Failed to establish secure TLS connection: {:#?}", err);
+                        io::Error::new(io::ErrorKind::Other, Box::new(err))
+                    })
                 }))
             }
         };
@@ -131,7 +128,7 @@ enum SmolStream {
     Tls(TlsStream<Async<TcpStream>>),
 
     /// A TCP connection that is in process of getting secured by TLS.
-    Handshake(future::BoxFuture<'static, io::Result<TlsStream<Async<TcpStream>>>>),
+    Handshake(Pin<Box<dyn Future<Output = io::Result<TlsStream<Async<TcpStream>>>> + Send>>),
 }
 
 impl hyper::client::connect::Connection for SmolStream {
@@ -151,7 +148,7 @@ impl tokio::io::AsyncRead for SmolStream {
                 SmolStream::Plain(s) => return Pin::new(s).poll_read(cx, buf),
                 SmolStream::Tls(s) => return Pin::new(s).poll_read(cx, buf),
                 SmolStream::Handshake(f) => {
-                    let s = futures::ready!(f.as_mut().poll(cx))?;
+                    let s = smol::ready!(f.as_mut().poll(cx))?;
                     *self = SmolStream::Tls(s);
                 }
             }
@@ -170,7 +167,7 @@ impl tokio::io::AsyncWrite for SmolStream {
                 SmolStream::Plain(s) => return Pin::new(s).poll_write(cx, buf),
                 SmolStream::Tls(s) => return Pin::new(s).poll_write(cx, buf),
                 SmolStream::Handshake(f) => {
-                    let s = futures::ready!(f.as_mut().poll(cx))?;
+                    let s = smol::ready!(f.as_mut().poll(cx))?;
                     *self = SmolStream::Tls(s);
                 }
             }

@@ -14,31 +14,37 @@
 
 use std::net::TcpStream;
 
-use futures::io;
-use futures::prelude::*;
-use smol::Async;
+use smol::{future, io, Async, Unblock};
 
 fn main() -> io::Result<()> {
-    smol::run(async {
+    smol::block_on(async {
         // Connect to the server and create async stdin and stdout.
-        let stream = Async::<TcpStream>::connect("127.0.0.1:6000").await?;
-        let stdin = smol::reader(std::io::stdin());
-        let mut stdout = smol::writer(std::io::stdout());
+        let stream = Async::<TcpStream>::connect(([127, 0, 0, 1], 6000)).await?;
+        let stdin = Unblock::new(std::io::stdin());
+        let mut stdout = Unblock::new(std::io::stdout());
 
         // Intro messages.
         println!("Connected to {}", stream.get_ref().peer_addr()?);
         println!("My nickname: {}", stream.get_ref().local_addr()?);
         println!("Type a message and hit enter!\n");
 
-        // References to `Async<T>` also implement `AsyncRead` and `AsyncWrite`.
-        let stream_r = &stream;
-        let mut stream_w = &stream;
+        let reader = &stream;
+        let mut writer = &stream;
 
         // Wait until the standard input is closed or the connection is closed.
-        futures::select! {
-            _ = io::copy(stdin, &mut stream_w).fuse() => println!("Quit!"),
-            _ = io::copy(stream_r, &mut stdout).fuse() => println!("Server disconnected!"),
-        }
+        future::race(
+            async {
+                let res = io::copy(stdin, &mut writer).await;
+                println!("Quit!");
+                res
+            },
+            async {
+                let res = io::copy(reader, &mut stdout).await;
+                println!("Server disconnected!");
+                res
+            },
+        )
+        .await?;
 
         Ok(())
     })

@@ -10,9 +10,7 @@
 fn main() -> std::io::Result<()> {
     use std::path::PathBuf;
 
-    use futures::io;
-    use futures::prelude::*;
-    use smol::{Async, Task};
+    use smol::{io, prelude::*, Async, Unblock};
     use tempfile::tempdir;
     use uds_windows::{UnixListener, UnixStream};
 
@@ -22,7 +20,7 @@ fn main() -> std::io::Result<()> {
         println!("Connected to {:?}", stream.get_ref().peer_addr()?);
 
         // Pipe the stream to stdout.
-        let mut stdout = smol::writer(std::io::stdout());
+        let mut stdout = Unblock::new(std::io::stdout());
         io::copy(&stream, &mut stdout).await?;
         Ok(())
     }
@@ -30,16 +28,16 @@ fn main() -> std::io::Result<()> {
     let dir = tempdir()?;
     let path = dir.path().join("socket");
 
-    smol::run(async {
+    smol::block_on(async {
         // Create a listener.
         let listener = Async::new(UnixListener::bind(&path)?)?;
         println!("Listening on {:?}", listener.get_ref().local_addr()?);
 
         // Spawn a client task.
-        let task = Task::spawn(client(path));
+        let task = smol::spawn(client(path));
 
         // Accept the client.
-        let (stream, _) = listener.with(|l| l.accept()).await?;
+        let (stream, _) = listener.read_with(|l| l.accept()).await?;
         println!("Accepted a client");
 
         // Send a message, drop the stream, and wait for the client.

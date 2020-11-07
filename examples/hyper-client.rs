@@ -6,17 +6,16 @@
 //! cargo run --example hyper-client
 //! ```
 
-use std::io;
-use std::net::{Shutdown, TcpStream};
+use std::net::Shutdown;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use anyhow::{bail, Context as _, Error, Result};
 use async_native_tls::TlsStream;
-use futures::prelude::*;
 use http::Uri;
 use hyper::{Body, Client, Request, Response};
-use smol::{Async, Task};
+use smol::{io, prelude::*, Async};
 
 /// Sends a request and fetches the response.
 async fn fetch(req: Request<Body>) -> Result<Response<Body>> {
@@ -28,7 +27,7 @@ async fn fetch(req: Request<Body>) -> Result<Response<Body>> {
 }
 
 fn main() -> Result<()> {
-    smol::run(async {
+    smol::block_on(async {
         // Create a request.
         let req = Request::get("https://www.rust-lang.org").body(Body::empty())?;
 
@@ -39,7 +38,7 @@ fn main() -> Result<()> {
         // Read the message body.
         let body = resp
             .into_body()
-            .try_fold(Vec::new(), |mut body, chunk| async move {
+            .try_fold(Vec::new(), |mut body, chunk| {
                 body.extend_from_slice(&chunk);
                 Ok(body)
             })
@@ -56,7 +55,7 @@ struct SmolExecutor;
 
 impl<F: Future + Send + 'static> hyper::rt::Executor<F> for SmolExecutor {
     fn execute(&self, fut: F) {
-        Task::spawn(async { drop(fut.await) }).detach();
+        smol::spawn(async { drop(fut.await) }).detach();
     }
 }
 
@@ -67,7 +66,7 @@ struct SmolConnector;
 impl hyper::service::Service<Uri> for SmolConnector {
     type Response = SmolStream;
     type Error = Error;
-    type Future = future::BoxFuture<'static, Result<Self::Response, Self::Error>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -79,14 +78,28 @@ impl hyper::service::Service<Uri> for SmolConnector {
 
             match uri.scheme_str() {
                 Some("http") => {
-                    let addr = format!("{}:{}", uri.host().unwrap(), uri.port_u16().unwrap_or(80));
-                    let stream = Async::<TcpStream>::connect(addr).await?;
+                    let socket_addr = {
+                        let host = host.to_string();
+                        let port = uri.port_u16().unwrap_or(80);
+                        smol::unblock(move || (host.as_str(), port).to_socket_addrs())
+                            .await?
+                            .next()
+                            .context("cannot resolve address")?
+                    };
+                    let stream = Async::<TcpStream>::connect(socket_addr).await?;
                     Ok(SmolStream::Plain(stream))
                 }
                 Some("https") => {
                     // In case of HTTPS, establish a secure TLS connection first.
-                    let addr = format!("{}:{}", uri.host().unwrap(), uri.port_u16().unwrap_or(443));
-                    let stream = Async::<TcpStream>::connect(addr).await?;
+                    let socket_addr = {
+                        let host = host.to_string();
+                        let port = uri.port_u16().unwrap_or(443);
+                        smol::unblock(move || (host.as_str(), port).to_socket_addrs())
+                            .await?
+                            .next()
+                            .context("cannot resolve address")?
+                    };
+                    let stream = Async::<TcpStream>::connect(socket_addr).await?;
                     let stream = async_native_tls::connect(host, stream).await?;
                     Ok(SmolStream::Tls(stream))
                 }

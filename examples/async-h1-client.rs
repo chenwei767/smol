@@ -6,12 +6,11 @@
 //! cargo run --example async-h1-client
 //! ```
 
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 
 use anyhow::{bail, Context as _, Error, Result};
-use futures::prelude::*;
 use http_types::{Method, Request, Response};
-use smol::Async;
+use smol::{prelude::*, Async};
 use url::Url;
 
 /// Sends a request and fetches the response.
@@ -24,8 +23,14 @@ async fn fetch(req: Request) -> Result<Response> {
         .context("cannot guess port")?;
 
     // Connect to the host.
-    let addr = format!("{}:{}", host, port);
-    let stream = Async::<TcpStream>::connect(addr).await?;
+    let socket_addr = {
+        let host = host.clone();
+        smol::unblock(move || (host.as_str(), port).to_socket_addrs())
+            .await?
+            .next()
+            .context("cannot resolve address")?
+    };
+    let stream = Async::<TcpStream>::connect(socket_addr).await?;
 
     // Send the request and wait for the response.
     let resp = match req.url().scheme() {
@@ -41,7 +46,7 @@ async fn fetch(req: Request) -> Result<Response> {
 }
 
 fn main() -> Result<()> {
-    smol::run(async {
+    smol::block_on(async {
         // Create a request.
         let addr = "https://www.rust-lang.org";
         let req = Request::new(Method::Get, Url::parse(addr)?);

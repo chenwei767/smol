@@ -9,10 +9,9 @@
 #[cfg(target_os = "linux")]
 fn main() -> std::io::Result<()> {
     use std::ffi::OsString;
-    use std::io;
 
     use inotify::{EventMask, Inotify, WatchMask};
-    use smol::Async;
+    use smol::{io, Async};
 
     type Event = (OsString, EventMask);
 
@@ -33,7 +32,7 @@ fn main() -> std::io::Result<()> {
         }
     }
 
-    smol::run(async {
+    smol::block_on(async {
         // Watch events in the current directory.
         let mut inotify = Async::new(Inotify::init()?)?;
         inotify.get_mut().add_watch(".", WatchMask::ALL_EVENTS)?;
@@ -43,7 +42,7 @@ fn main() -> std::io::Result<()> {
 
         // Wait for events in a loop and print them on the screen.
         loop {
-            for event in inotify.with_mut(read_op).await? {
+            for event in inotify.read_with_mut(read_op).await? {
                 println!("{:?}", event);
             }
         }

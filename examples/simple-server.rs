@@ -9,17 +9,15 @@
 //! Open in the browser any of these addresses:
 //!
 //! - http://localhost:8000/
-//! - https://localhost:8001/ (you'll need to import the TLS certificate first!)
+//! - https://localhost:8001/ (accept the security prompt in the browser)
 //!
-//! Refer to `README.md` to see how to import or generate the TLS certificate.
+//! Refer to `README.md` to see how to the TLS certificate was generated.
 
 use std::net::{TcpListener, TcpStream};
-use std::thread;
 
 use anyhow::Result;
 use async_native_tls::{Identity, TlsAcceptor};
-use futures::prelude::*;
-use smol::{Async, Task};
+use smol::{future, prelude::*, Async};
 
 const RESPONSE: &[u8] = br#"
 HTTP/1.1 200 OK
@@ -40,11 +38,14 @@ async fn serve(mut stream: Async<TcpStream>, tls: Option<TlsAcceptor>) -> Result
             println!("Serving https://{}", stream.get_ref().local_addr()?);
 
             // In case of HTTPS, establish a secure TLS connection first.
-            let mut stream = tls.accept(stream).await?;
-
-            stream.write_all(RESPONSE).await?;
-            stream.flush().await?;
-            stream.close().await?;
+            match tls.accept(stream).await {
+                Ok(mut stream) => {
+                    stream.write_all(RESPONSE).await?;
+                    stream.flush().await?;
+                    stream.close().await?;
+                }
+                Err(err) => println!("Failed to establish secure TLS connection: {:#?}", err),
+            }
         }
     }
     Ok(())
@@ -61,28 +62,31 @@ async fn listen(listener: Async<TcpListener>, tls: Option<TlsAcceptor>) -> Resul
     loop {
         // Accept the next connection.
         let (stream, _) = listener.accept().await?;
+        let tls = tls.clone();
 
         // Spawn a background task serving this connection.
-        Task::spawn(serve(stream, tls.clone())).unwrap().detach();
+        smol::spawn(async move {
+            if let Err(err) = serve(stream, tls).await {
+                println!("Connection error: {:#?}", err);
+            }
+        })
+        .detach();
     }
 }
 
 fn main() -> Result<()> {
     // Initialize TLS with the local certificate, private key, and password.
-    let identity = Identity::from_pkcs12(include_bytes!("../identity.pfx"), "password")?;
+    let identity = Identity::from_pkcs12(include_bytes!("identity.pfx"), "password")?;
     let tls = TlsAcceptor::from(native_tls::TlsAcceptor::new(identity)?);
 
-    // Create an executor thread pool.
-    let num_threads = num_cpus::get().max(1);
-    for _ in 0..num_threads {
-        thread::spawn(|| smol::run(future::pending::<()>()));
-    }
-
     // Start HTTP and HTTPS servers.
-    smol::run(async {
-        let http = listen(Async::<TcpListener>::bind("127.0.0.1:8000")?, None);
-        let https = listen(Async::<TcpListener>::bind("127.0.0.1:8001")?, Some(tls));
-        future::try_join(http, https).await?;
+    smol::block_on(async {
+        let http = listen(Async::<TcpListener>::bind(([127, 0, 0, 1], 8000))?, None);
+        let https = listen(
+            Async::<TcpListener>::bind(([127, 0, 0, 1], 8001))?,
+            Some(tls),
+        );
+        future::try_zip(http, https).await?;
         Ok(())
     })
 }
